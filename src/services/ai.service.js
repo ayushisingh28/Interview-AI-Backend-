@@ -1,6 +1,7 @@
 const { GoogleGenAI } = require("@google/genai")
 const { z } = require("zod")
 const { zodToJsonSchema } = require("zod-to-json-schema")
+const puppeteerCore = require("puppeteer-core")
 const puppeteer = require("puppeteer")
 
 const ai = new GoogleGenAI({
@@ -57,8 +58,8 @@ async function generateInterviewReport({ resume, selfDescription, jobDescription
 
 
 
-/** Chromium flags required in Docker / Render / most cloud hosts (no usable sandbox). */
-const PUPPETEER_LAUNCH_OPTIONS = {
+/** Local dev: bundled Chromium from full `puppeteer` package. */
+const LOCAL_PUPPETEER_OPTIONS = {
     headless: true,
     args: [
         "--no-sandbox",
@@ -68,23 +69,42 @@ const PUPPETEER_LAUNCH_OPTIONS = {
     ],
 }
 
+/**
+ * Render and most cloud hosts cannot run Puppeteer's default Chromium reliably.
+ * Use @sparticuz/chromium + puppeteer-core (see @sparticuz/chromium README).
+ */
+async function launchBrowserForPdf() {
+    if (process.env.NODE_ENV === "production" || process.env.RENDER) {
+        const chromium = require("@sparticuz/chromium")
+        chromium.setGraphicsMode = false
+        return puppeteerCore.launch({
+            args: puppeteerCore.defaultArgs({ args: chromium.args, headless: "shell" }).concat([ "--disable-dev-shm-usage" ]),
+            defaultViewport: { width: 1200, height: 1600, deviceScaleFactor: 1 },
+            executablePath: await chromium.executablePath(),
+            headless: "shell",
+        })
+    }
+    return puppeteer.launch(LOCAL_PUPPETEER_OPTIONS)
+}
+
 async function generatePdfFromHtml(htmlContent) {
-    const browser = await puppeteer.launch(PUPPETEER_LAUNCH_OPTIONS)
-    const page = await browser.newPage()
-    await page.setContent(htmlContent, { waitUntil: "load" })
+    const browser = await launchBrowserForPdf()
+    try {
+        const page = await browser.newPage()
+        await page.setContent(htmlContent, { waitUntil: "load" })
 
-    const pdfBuffer = await page.pdf({
-        format: "A4", margin: {
-            top: "20mm",
-            bottom: "20mm",
-            left: "15mm",
-            right: "15mm"
-        }
-    })
-
-    await browser.close()
-
-    return pdfBuffer
+        const pdfBuffer = await page.pdf({
+            format: "A4", margin: {
+                top: "20mm",
+                bottom: "20mm",
+                left: "15mm",
+                right: "15mm"
+            }
+        })
+        return pdfBuffer
+    } finally {
+        await browser.close()
+    }
 }
 
 async function generateResumePdf({ resume, selfDescription, jobDescription }) {
